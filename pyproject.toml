@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coinrun-gymnasium"
+version = "0.0.2"
+description = "Gymnasium port of CoinRun: A Reinforcement Learning Environment"
+readme = "README.md"
+authors = [
+    {name = "Yannick Metz", email = "your.email@example.com"},
+]
+requires-python = ">=3.8"
+license = {text = "MIT"}  # Adjust license as needed
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8", 
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "gymnasium>=1.0.0",
+    "pyglet>=2.0.0",
+    'joblib>=1.0.0',
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/coinrun"
+"Bug Tracker" = "https://github.com/yourusername/coinrun/issues"

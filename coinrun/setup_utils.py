@@ -25,7 +25,7 @@ def restore_file(restore_id, load_key='default'):
                 print('warning key %s not restored' % key)
 
         Config.parse_args_dict(sub_dict)
-    
+
     from coinrun.coinrunenv import init_args_and_threads
     init_args_and_threads(4)
 

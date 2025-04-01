@@ -1,20 +1,15 @@
-from mpi4py import MPI
 import argparse
 import os
 
 class ConfigSingle(object):
     """
     A global config object that can be initialized from command line arguments or
-    keyword arguments.
+    keyword arguments, adapted for Stable Baselines3.
     """
     def __init__(self):
         self.WORKDIR = './saved_models/'
-        self.TB_DIR = '/tmp/tensorflow'
         if not os.path.exists(self.WORKDIR):
             os.makedirs(self.WORKDIR, exist_ok=True)
-
-        self.LOG_ALL_MPI = True
-        self.SYNC_FROM_ROOT = True
 
         arg_keys = []
         bool_keys = []
@@ -30,12 +25,9 @@ class ConfigSingle(object):
         # One of {'standard', 'platform', 'maze'} (for CoinRun, CoinRun-Platforms, Random-Mazes)
         type_keys.append(('gamet', 'game_type', str, 'standard', True)) 
 
-        # The convolutional architecture to use
-        # One of {'nature', 'impala', 'impalalarge'}
-        type_keys.append(('arch', 'architecture', str, 'impala', True))
-
-        # Should the model include an LSTM
-        type_keys.append(('lstm', 'use_lstm', int, 0, True))
+        # The policy network architecture to use (SB3 compatible)
+        # Options: 'CnnPolicy', 'MlpPolicy', 'MultiInputPolicy'
+        type_keys.append(('policy', 'policy_type', str, 'CnnPolicy', True))
 
         # The number of parallel environments to run
         type_keys.append(('ne', 'num_envs', int, 32, True))
@@ -51,65 +43,47 @@ class ConfigSingle(object):
         # NOTE: This value must and will be saved, in order to use the same training set for evaluation and/or visualization.
         type_keys.append(('set-seed', 'set_seed', int, -1, True))
 
-        # PPO Hyperparameters
-        type_keys.append(('ns', 'num_steps', int, 256))
-        type_keys.append(('nmb', 'num_minibatches', int, 8))
-        type_keys.append(('ppoeps', 'ppo_epochs', int, 3))
-        type_keys.append(('ent', 'entropy_coeff', float, .01))
+        # SB3 PPO Hyperparameters
+        type_keys.append(('ns', 'n_steps', int, 256))
+        type_keys.append(('bs', 'batch_size', int, 64))
+        type_keys.append(('nepochs', 'n_epochs', int, 3))
+        type_keys.append(('ent', 'ent_coef', float, .01))
         type_keys.append(('lr', 'learning_rate', float, 5e-4))
         type_keys.append(('gamma', 'gamma', float, 0.999))
+        type_keys.append(('gae', 'gae_lambda', float, 0.95))
+        type_keys.append(('clip', 'clip_range', float, 0.2))
+        type_keys.append(('vf', 'vf_coef', float, 0.5))
+        type_keys.append(('maxgrad', 'max_grad_norm', float, 0.5))
 
         # Should the agent's velocity be painted in the upper left corner of observations.
         # 1/0 means True/False
         # PAINT_VEL_INFO = -1 uses smart defaulting -- will default to 1 if GAME_TYPE is 'standard' (CoinRun), 0 otherwise
         type_keys.append(('pvi', 'paint_vel_info', int, -1, True))
 
-        # Should batch normalization be used after each convolutional layer
-        # 1/0 means True/False
-        # This code only supports training-mode batch normalization (normalizing with statistics of the current batch).
-        # In practice, we found this is nearly as effective as tracking the moving average of the statistics.
-        # NOTE: Only applies to IMPALA and IMPALA-Large architectures
-        type_keys.append(('norm', 'use_batch_norm', int, 0, True))
-
-        # What dropout probability to use after each convolutional layer
-        # NOTE: Only applies to IMPALA and IMPALA-Large architectures
-        type_keys.append(('dropout', 'dropout', float, 0.0, True))
+        # The number of frames to stack for each observation.
+        # No frame stack is necessary if PAINT_VEL_INFO = 1
+        type_keys.append(('fs', 'frame_stack', int, 1, True))
 
         # Should data augmentation be used
         # 1/0 means True/False
         type_keys.append(('uda', 'use_data_augmentation', int, 0))
 
-        # The l2 penalty to use during training
-        type_keys.append(('l2', 'l2_weight', float, 0.0))
-
-        # The probability the agent's action is replaced with a random action
-        type_keys.append(('eps', 'epsilon_greedy', float, 0.0))
-
-        # The number of frames to stack for each observation.
-        # No frame stack is necessary if PAINT_VEL_INFO = 1
-        type_keys.append(('fs', 'frame_stack', int, 1, True))
 
         # Should observations be transformed to grayscale
         # 1/0 means True/False
         type_keys.append(('ubw', 'use_black_white', int, 0, True))
 
-        # Overwrite the latest save file after this many updates
+        # Checkpoint and evaluation settings
         type_keys.append(('si', 'save_interval', int, 10))
-
-        # The number of evaluation environments to use
+        type_keys.append(('eval', 'eval_freq', int, 10000))
         type_keys.append(('num-eval', 'num_eval', int, 20, True))
-
-        # The number of episodes to evaluate with each evaluation environment
         type_keys.append(('rep', 'rep', int, 1))
+        
+        # Total timesteps for training
+        type_keys.append(('steps', 'total_timesteps', int, 25000000))
 
-        # Should half the workers act solely has test workers for evaluation
-        # These workers will run on test levels and not contributing to training
-        bool_keys.append(('test', 'test'))
-
-        # Perform evaluation with all levels sampled from the training set
+        # Evaluation options
         bool_keys.append(('train-eval', 'train_eval'))
-
-        # Perform evaluation with all levels sampled from the test set (unseen levels of high difficulty)
         bool_keys.append(('test-eval', 'test_eval'))
 
         # Only generate high difficulty levels
@@ -117,6 +91,9 @@ class ConfigSingle(object):
 
         # Use high resolution images for rendering
         bool_keys.append(('hres', 'is_high_res'))
+
+        # Tensorboard logging
+        bool_keys.append(('tb', 'tensorboard_log'))
 
         self.RES_KEYS = []
 
@@ -139,18 +116,8 @@ class ConfigSingle(object):
         self.load_data = {}
         self.args_dict = {}
 
-    def is_test_rank(self):
-        if self.TEST:
-            rank = MPI.COMM_WORLD.Get_rank()
-            return rank % 2 == 1
-
-        return False
-
-    def get_test_frac(self):
-        return .5 if self.TEST else 0
-
     def get_load_data(self, load_key='default'):
-        if not load_key in self.load_data:
+        if load_key not in self.load_data:
             return None
 
         return self.load_data[load_key]
@@ -183,12 +150,6 @@ class ConfigSingle(object):
         self.compute_args_dependencies()
 
     def compute_args_dependencies(self):
-        if self.is_test_rank():
-            self.NUM_LEVELS = 0
-            self.USE_DATA_AUGMENTATION = 0
-            self.EPSILON_GREEDY = 0
-            self.HIGH_DIFFICULTY = 1
-
         if self.PAINT_VEL_INFO < 0:
             if self.GAME_TYPE == 'standard':
                 self.PAINT_VEL_INFO = 1
@@ -198,8 +159,6 @@ class ConfigSingle(object):
         if self.TEST_EVAL:
             self.NUM_LEVELS = 0
             self.HIGH_DIFFICULTY = 1
-
-        self.TRAIN_TEST_COMM = MPI.COMM_WORLD.Split(1 if self.is_test_rank() else 0, 0)
 
     def get_load_filename(self, base_name=None, restore_id=None):
         if restore_id is None:
@@ -215,7 +174,7 @@ class ConfigSingle(object):
     def get_save_path(self, runid=None):
         return self.WORKDIR + self.get_save_file(runid)
 
-    def get_save_file_for_rank(self, rank, runid=None, base_name=None):
+    def get_save_file_for_rank(self, runid=None, base_name=None):
         if runid is None:
             runid = self.RUN_ID
 
@@ -224,13 +183,10 @@ class ConfigSingle(object):
         if base_name is not None:
             extra = '_' + base_name
 
-        return 'sav_' + runid + extra + '_' + str(rank)
+        return 'sav_' + runid + extra
 
     def get_save_file(self, runid=None, base_name=None):
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
-
-        return self.get_save_file_for_rank(rank, runid, base_name=base_name)
+        return self.get_save_file_for_rank(runid, base_name=base_name)
 
     def get_arg_text(self):
         arg_strs = []
