@@ -83,12 +83,12 @@ lib.vec_wait.argtypes = [
 
 already_inited = False
 
-def init_args_and_threads(cpu_count=4,
+def init_args_and_threads(cpu_count=1,  # Changed from 4 to 1 for single env
                           monitor_csv_policy='all',
                           rand_seed=None):
     """
     Perform one-time global init for the CoinRun library.  This must be called
-    before creating an instance of CoinRunVecEnv.  You should not
+    before creating an instance of CoinRunEnv.  You should not
     call this multiple times from the same process.
     """
     os.environ['COINRUN_RESOURCES_PATH'] = os.path.join(SCRIPT_DIR, 'assets')
@@ -131,18 +131,17 @@ def shutdown():
         return
     lib.coinrun_shutdown()
 
-class CoinRunVecEnv(gymnasium.Env):
+class CoinRunEnv(gymnasium.Env):
     """
-    This is the CoinRun VecEnv, all CoinRun environments are just instances
-    of this class with different values for `game_type`
+    This is the CoinRun environment, a single environment instance that can be vectorized by Gymnasium
+    if needed.
 
-    `game_type`: int game type corresponding to the game type to create, see `enum GameType` in `coinrun.cpp`
-    `num_envs`: number of environments to create in this VecEnv
+    `game_type`: str game type corresponding to the game type to create ('standard', 'platform', 'maze')
     `lump_n`: only used when the environment creates `monitor.csv` files
     `default_zoom`: controls how much of the level the agent can see
     `render_mode`: str to determine the rendering mode (None, "human", "rgb_array")
     """
-    def __init__(self, game_type, num_envs, lump_n=0, default_zoom=5.0, render_mode=None):
+    def __init__(self, game_type, lump_n=0, default_zoom=5.0, render_mode=None):
         # Make sure the environment is initialized
         if not already_inited:
             init_args_and_threads()
@@ -156,13 +155,14 @@ class CoinRunVecEnv(gymnasium.Env):
         self.RES_H       = lib.get_RES_H()
         self.VIDEORES    = lib.get_VIDEORES()
 
-        self.num_envs = num_envs
-        self.buf_rew = np.zeros([num_envs], dtype=np.float32)
-        self.buf_done = np.zeros([num_envs], dtype=bool)
-        self.buf_rgb   = np.zeros([num_envs, self.RES_H, self.RES_W, 3], dtype=np.uint8)
+        # Always use a single environment
+        self.buf_rew = np.zeros([1], dtype=np.float32)
+        self.buf_done = np.zeros([1], dtype=bool)
+        self.buf_rgb = np.zeros([1, self.RES_H, self.RES_W, 3], dtype=np.uint8)
+        
         self.hires_render = Config.IS_HIGH_RES
         if self.hires_render:
-            self.buf_render_rgb = np.zeros([num_envs, self.VIDEORES, self.VIDEORES, 3], dtype=np.uint8)
+            self.buf_render_rgb = np.zeros([1, self.VIDEORES, self.VIDEORES, 3], dtype=np.uint8)
         else:
             self.buf_render_rgb = np.zeros([1, 1, 1, 1], dtype=np.uint8)
 
@@ -170,13 +170,15 @@ class CoinRunVecEnv(gymnasium.Env):
         self.observation_space = gymnasium.spaces.Box(0, 255, shape=[self.RES_H, self.RES_W, num_channels], dtype=np.uint8)
         self.action_space = gymnasium.spaces.Discrete(self.NUM_ACTIONS)
 
+        # Create the environment with 1 as nenvs to keep the C++ side happy
         self.handle = lib.vec_create(
             game_versions[game_type],
-            self.num_envs,
+            1,  # Always use 1 env
             lump_n,
             self.hires_render,
             default_zoom)
-        self.dummy_info = [{} for _ in range(num_envs)]
+        
+        self.dummy_info = {}
 
     def __del__(self):
         if hasattr(self, 'handle'):
@@ -204,15 +206,38 @@ class CoinRunVecEnv(gymnasium.Env):
             np.random.seed(seed)
             self.np_random, _ = gymnasium.utils.seeding.np_random(seed)
         
+        # CoinRun environment doesn't support explicit resets
+        # It resets automatically when an episode ends
         print("CoinRun ignores resets")
-        obs, _, _, _, info = self.step_wait()
-        return obs, info
+        
+        # Do a dummy step to get an initial observation
+        # Use action 0 as a placeholder
+        action = 0
+        actions = np.array([action], dtype=np.int32)
+        lib.vec_step_async_discrete(self.handle, actions)
+        
+        self.buf_rew.fill(0)
+        self.buf_done.fill(0)
+        
+        lib.vec_wait(
+            self.handle,
+            self.buf_rgb,
+            self.buf_render_rgb,
+            self.buf_rew,
+            self.buf_done)
+            
+        obs_frames = self.buf_rgb
+        if Config.USE_BLACK_WHITE:
+            obs_frames = np.mean(obs_frames, axis=-1).astype(np.uint8)[...,None]
+            
+        # Return observation without the batch dimension
+        return obs_frames[0], self.dummy_info
 
     def get_images(self):
         if self.hires_render:
-            return self.buf_render_rgb
+            return self.buf_render_rgb[0]  # Return without batch dimension
         else:
-            return self.buf_rgb
+            return self.buf_rgb[0]  # Return without batch dimension
 
     def render(self):
         """
@@ -234,15 +259,29 @@ class CoinRunVecEnv(gymnasium.Env):
             return images
         return None
 
-    def step_async(self, actions):
-        assert actions.dtype in [np.int32, np.int64]
-        actions = actions.astype(np.int32)
+    def step(self, action):
+        """
+        Step the environment with a single action.
+
+        Args:
+            action: Action to take in the environment.
+
+        Returns:
+            observation: Next observation.
+            reward: Reward from the action.
+            terminated: Whether the episode has terminated.
+            truncated: Whether the episode has been truncated.
+            info: Additional information.
+        """
+        # Convert single action to array for C++ side
+        actions = np.array([action], dtype=np.int32)
         lib.vec_step_async_discrete(self.handle, actions)
+        
+        # Reset buffers
+        self.buf_rew.fill(0)
+        self.buf_done.fill(0)
 
-    def step_wait(self):
-        self.buf_rew = np.zeros_like(self.buf_rew)
-        self.buf_done = np.zeros_like(self.buf_done)
-
+        # Wait for environment step to complete
         lib.vec_wait(
             self.handle,
             self.buf_rgb,
@@ -256,40 +295,38 @@ class CoinRunVecEnv(gymnasium.Env):
             obs_frames = np.mean(obs_frames, axis=-1).astype(np.uint8)[...,None]
 
         # In the new API, `done` is split into `terminated` and `truncated`
-        # For simplicity, we'll set `truncated` to False for all environments
-        terminated = self.buf_done
-        truncated = np.zeros_like(terminated)
+        terminated = self.buf_done[0]  # Get scalar value 
+        truncated = False  # Simple case, no truncation
 
-        return obs_frames, self.buf_rew, terminated, truncated, self.dummy_info
+        return obs_frames[0], self.buf_rew[0], terminated, truncated, self.dummy_info
 
-    def step(self, actions):
-        """
-        Step the environment.
 
-        Args:
-            actions: Actions to take in the environment.
-
-        Returns:
-            observation: Next observation.
-            reward: Reward from the action.
-            terminated: Whether the episode has terminated.
-            truncated: Whether the episode has been truncated.
-            info: Additional information.
-        """
-        self.step_async(actions)
-        return self.step_wait()
-
-def make(env_id, num_envs, **kwargs):
+def make(env_id, **kwargs):
     """
-    Factory function to create a CoinRunVecEnv.
+    Factory function to create a CoinRunEnv.
     
     Args:
         env_id: The environment ID (standard, platform, maze)
-        num_envs: The number of environments to create
-        **kwargs: Additional arguments to pass to the CoinRunVecEnv constructor
+        **kwargs: Additional arguments to pass to the CoinRunEnv constructor
     
     Returns:
-        A CoinRunVecEnv instance
+        A CoinRunEnv instance
     """
     assert env_id in game_versions, 'cannot find environment "%s", maybe you mean one of %s' % (env_id, list(game_versions.keys()))
-    return CoinRunVecEnv(env_id, num_envs, **kwargs)
+    return CoinRunEnv(env_id, **kwargs)
+
+
+def register_coinrun_envs():
+    """
+    Register the CoinRun environments with Gymnasium.
+    """
+    Config.initialize_args(use_cmd_line_args=False)
+
+    for env_id in game_versions:
+        gymnasium.register(
+            id=f'CoinRun-{env_id}-v0',
+            entry_point='coinrun.coinrunenv:make',
+            kwargs={'env_id': env_id},
+            max_episode_steps=1000,
+            nondeterministic=True,
+        )

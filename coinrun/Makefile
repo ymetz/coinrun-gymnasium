@@ -4,11 +4,8 @@ OBJDIRD=.build-debug
 
 # Check for QTDIR environment variable
 ifdef QTDIR
-$(info Using Qt from QTDIR: $(QTDIR))
 QT_BIN=$(QTDIR)/bin
 QT_PKG_CONFIG=$(QTDIR)/lib/pkgconfig
-else
-$(info QTDIR not set, trying to detect Qt)
 endif
 
 ifeq ($(UNAME),Linux)
@@ -22,17 +19,14 @@ endif
 ifeq ($(UNAME),Darwin)
 # First check if QTDIR is set
 ifdef QTDIR
-$(info Mac, using Qt from environment variable)
  MOC =$(QT_BIN)/moc
 export PKG_CONFIG_PATH=$(QT_PKG_CONFIG)
 # Second check for homebrew Qt
 else ifneq ("$(wildcard /usr/local/opt/qt5/bin/moc)", "")
-$(info Mac, assumed python3, homebrew branch)
  MOC =/usr/local/opt/qt5/bin/moc
 export PKG_CONFIG_PATH=/usr/local/opt/qt5/lib/pkgconfig
 # Third check if moc is in PATH (could be Anaconda)
 else ifneq ($(shell which moc 2>/dev/null),)
-$(info Mac, found moc in PATH: $(shell which moc))
  MOC =$(shell which moc)
 # Path to pkg-config files often in the same base directory
 QT_BASE=$(dir $(dir $(shell which moc)))
@@ -49,10 +43,6 @@ endif
 # and ensure proper include search order
  CFLAGS_PLATFORM = -isystem $(QTDIR)/include -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -stdlib=libc++
 endif
-
-# Add some debug info
-$(info Using MOC: $(MOC))
-$(info PKG_CONFIG_PATH: $(PKG_CONFIG_PATH))
 
 INC += `$(PKG) --cflags Qt5Widgets`
 LIBS += -lstdc++ `$(PKG) --libs Qt5Widgets`
